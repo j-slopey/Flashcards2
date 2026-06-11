@@ -294,8 +294,8 @@ def main():
     ap.add_argument("--csv", default="vocab_di_base.csv")
     ap.add_argument("--levels", nargs="*", default=None,
                     help="Limit to these level names (default: all levels).")
-    ap.add_argument("--model", default="gemini-2.5-flash")
-    ap.add_argument("--batch-size", type=int, default=25)
+    ap.add_argument("--model", default="gemini-3.1-flash-lite")
+    ap.add_argument("--batch-size", type=int, default=30)
     ap.add_argument("--checkpoint", default="translations_by_pos.jsonl")
     ap.add_argument("--db", default="flashcards.db")
     ap.add_argument("--table", default="flashcards")
