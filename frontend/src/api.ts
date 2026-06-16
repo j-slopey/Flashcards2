@@ -13,24 +13,38 @@ export interface Card {
   level: string
   word: string
   pos: string
-  pos_display: string
   english: string
   spanish: Spanish
   other_senses: number
 }
 
+// FSRS ratings (must match the backend / go-fsrs values).
+export const Rating = { Again: 1, Hard: 2, Good: 3, Easy: 4 } as const
+export type RatingValue = (typeof Rating)[keyof typeof Rating]
+
+// Predicted "next review in …" per rating, previewed when the card is served.
+export interface Intervals {
+  again: string
+  hard: string
+  good: string
+  easy: string
+}
+
 export interface SessionCard {
   position: number
   card: Card
+  is_new: boolean
+  preview: Intervals
   answered: boolean
-  correct: boolean | null
+  rating: RatingValue | null
 }
 
 export interface Session {
   id: number
   levels: string[]
-  size: number
   completed: boolean
+  new_count: number
+  due_count: number
   cards: SessionCard[]
 }
 
@@ -41,9 +55,13 @@ export interface Level {
 
 export interface Progress {
   answered: number
-  correct: number
+  remembered: number
   total: number
   completed: boolean
+}
+
+export interface Settings {
+  new_cards_per_day: number
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -61,15 +79,23 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 export const api = {
   levels: () => request<Level[]>('/levels'),
 
-  createSession: (levels: string[], size = 20) =>
-    request<Session>('/sessions', {
-      method: 'POST',
-      body: JSON.stringify({ levels, size }),
+  getSettings: () => request<Settings>('/settings'),
+
+  saveSettings: (settings: Settings) =>
+    request<Settings>('/settings', {
+      method: 'PUT',
+      body: JSON.stringify(settings),
     }),
 
-  answer: (sessionId: number, cardId: number, correct: boolean) =>
+  createSession: (levels: string[]) =>
+    request<Session>('/sessions', {
+      method: 'POST',
+      body: JSON.stringify({ levels }),
+    }),
+
+  answer: (sessionId: number, cardId: number, rating: RatingValue) =>
     request<Progress>(`/sessions/${sessionId}/answers`, {
       method: 'POST',
-      body: JSON.stringify({ card_id: cardId, correct }),
+      body: JSON.stringify({ card_id: cardId, rating }),
     }),
 }

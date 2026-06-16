@@ -5,18 +5,15 @@ interface Props {
   onStart: (levels: string[]) => void
 }
 
-const SESSION_SIZE = 20
-
 export function Setup({ onStart }: Props) {
   const [levels, setLevels] = useState<Level[]>([])
   const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [newPerDay, setNewPerDay] = useState<number>(20)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
-    api
-      .levels()
-      .then((ls) => setLevels(ls))
-      .catch((e) => setError(String(e.message ?? e)))
+    api.levels().then(setLevels).catch((e) => setError(String(e.message ?? e)))
+    api.getSettings().then((s) => setNewPerDay(s.new_cards_per_day)).catch(() => {})
   }, [])
 
   const toggle = (name: string) => {
@@ -27,12 +24,18 @@ export function Setup({ onStart }: Props) {
     })
   }
 
+  const commitSetting = (value: number) => {
+    const v = Math.max(0, Math.min(999, Math.floor(value) || 0))
+    setNewPerDay(v)
+    api.saveSettings({ new_cards_per_day: v }).catch(() => {})
+  }
+
   return (
     <div className="app">
       <h1>Italiano flashcards</h1>
       <p className="subtitle">
-        Pick the vocabulary level(s) you want to study, then start a session of{' '}
-        {SESSION_SIZE} cards.
+        Pick the vocabulary level(s) to study. Each session reviews everything
+        that's due, then introduces new words — spaced with FSRS.
       </p>
 
       {error && <div className="error">{error}</div>}
@@ -53,6 +56,23 @@ export function Setup({ onStart }: Props) {
           </label>
         ))}
       </div>
+
+      <div className="setting-row">
+        <label htmlFor="new-per-day">New cards per day</label>
+        <input
+          id="new-per-day"
+          className="number-input"
+          type="number"
+          min={0}
+          max={999}
+          value={newPerDay}
+          onChange={(e) => setNewPerDay(Number(e.target.value))}
+          onBlur={(e) => commitSetting(Number(e.target.value))}
+        />
+      </div>
+      <p className="setting-hint">
+        Due reviews are never capped — this only limits brand-new words.
+      </p>
 
       <button
         className="btn-primary"

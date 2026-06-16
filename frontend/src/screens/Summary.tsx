@@ -1,22 +1,22 @@
 interface Props {
-  correct: number
+  remembered: number
   total: number
   onRestart: () => void
 }
 
-export function Summary({ correct, total, onRestart }: Props) {
-  const pct = total > 0 ? Math.round((correct / total) * 100) : 0
+export function Summary({ remembered, total, onRestart }: Props) {
+  const pct = total > 0 ? Math.round((remembered / total) * 100) : 0
   return (
     <div className="app">
       <h1>Session complete</h1>
-      <p className="subtitle">Nice work — here's how you did.</p>
+      <p className="subtitle">Nice work — FSRS has rescheduled each card.</p>
 
       <div className="summary">
         <div className="score">
-          {correct}
+          {remembered}
           <span className="total"> / {total}</span>
         </div>
-        <div className="summary-label">{pct}% recalled correctly</div>
+        <div className="summary-label">{pct}% remembered (Hard, Good or Easy)</div>
       </div>
 
       <button className="btn-primary" onClick={onRestart}>

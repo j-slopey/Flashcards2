@@ -1,29 +1,46 @@
 import { useState } from 'react'
-import type { Card } from '../api'
+import { Rating, type RatingValue, type SessionCard } from '../api'
+import { playPronunciation } from '../speech'
 
 interface Props {
-  card: Card
+  sessionCard: SessionCard
   index: number // 0-based
   total: number
-  correctSoFar: number
-  onGrade: (correct: boolean) => void
+  rememberedSoFar: number
+  onGrade: (rating: RatingValue) => void
 }
 
-const RELATION_LABEL: Record<Card['spanish']['relation'], string> = {
+const RELATION_LABEL = {
   cognate: 'Spanish cognate',
   false_friend: '⚠ False friend',
   none: 'No Spanish link',
-}
+} as const
 
-export function Play({ card, index, total, correctSoFar, onGrade }: Props) {
+// The four FSRS rating buttons, in order, with the preview key they read.
+const RATINGS: { value: RatingValue; label: string; cls: string; key: keyof SessionCard['preview'] }[] = [
+  { value: Rating.Again, label: 'Again', cls: 'again', key: 'again' },
+  { value: Rating.Hard, label: 'Hard', cls: 'hard', key: 'hard' },
+  { value: Rating.Good, label: 'Good', cls: 'good', key: 'good' },
+  { value: Rating.Easy, label: 'Easy', cls: 'easy', key: 'easy' },
+]
+
+export function Play({ sessionCard, index, total, rememberedSoFar, onGrade }: Props) {
   const [revealed, setRevealed] = useState(false)
+  const [speaking, setSpeaking] = useState(false)
+  const { card, preview, is_new } = sessionCard
 
-  // Reset reveal state whenever a new card comes in.
-  // key on the card id from the parent guarantees a fresh component instead.
+  const speak = async () => {
+    setSpeaking(true)
+    try {
+      await playPronunciation(card.word)
+    } finally {
+      setSpeaking(false)
+    }
+  }
 
-  const grade = (correct: boolean) => {
+  const grade = (rating: RatingValue) => {
     setRevealed(false)
-    onGrade(correct)
+    onGrade(rating)
   }
 
   const rel = card.spanish.relation
@@ -35,16 +52,44 @@ export function Play({ card, index, total, correctSoFar, onGrade }: Props) {
         <span>
           Card {index + 1} / {total}
         </span>
-        <span>{correctSoFar} correct</span>
+        <span>{rememberedSoFar} remembered</span>
       </div>
       <div className="progress-bar">
         <div className="progress-fill" style={{ width: `${pct}%` }} />
       </div>
 
       <div className="card">
-        <div className="card-level">{card.level}</div>
-        <div className="word">{card.word}</div>
-        <div className="pos">{card.pos_display || card.pos}</div>
+        <div className="card-level">
+          {card.level}
+          {is_new ? <span className="new-tag">new</span> : null}
+        </div>
+        <div className="word-row">
+          <span className="word">{card.word}</span>
+          <button
+            className={`speak-btn ${speaking ? 'speaking' : ''}`}
+            onClick={speak}
+            disabled={speaking}
+            aria-label={`Listen to ${card.word}`}
+            title="Listen to pronunciation"
+          >
+              <svg
+                width="22"
+                height="22"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M11 5 6 9H2v6h4l5 4V5z" />
+                <path d="M15.5 8.5a5 5 0 0 1 0 7" />
+                <path d="M19 5a9 9 0 0 1 0 14" />
+              </svg>
+          </button>
+        </div>
+        <div className="pos">{card.pos}</div>
 
         {card.other_senses > 0 && (
           <div className="sense-hint">
@@ -79,13 +124,17 @@ export function Play({ card, index, total, correctSoFar, onGrade }: Props) {
             Reveal answer
           </button>
         ) : (
-          <div className="grade-row">
-            <button className="btn-missed" onClick={() => grade(false)}>
-              Missed it
-            </button>
-            <button className="btn-got" onClick={() => grade(true)}>
-              Got it
-            </button>
+          <div className="rating-row">
+            {RATINGS.map((r) => (
+              <button
+                key={r.value}
+                className={`btn-rate ${r.cls}`}
+                onClick={() => grade(r.value)}
+              >
+                <span className="rate-label">{r.label}</span>
+                <span className="rate-interval">{preview[r.key]}</span>
+              </button>
+            ))}
           </div>
         )}
       </div>

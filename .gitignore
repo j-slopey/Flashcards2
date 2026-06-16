@@ -6,3 +6,4 @@ frontend/dist
 
 # Backend
 backend/flashcards-api
+backend/audiocache/

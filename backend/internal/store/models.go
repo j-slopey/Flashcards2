@@ -14,11 +14,30 @@ type Card struct {
 	ID          int64   `json:"id"`
 	Level       string  `json:"level"`
 	Word        string  `json:"word"`
-	POS         string  `json:"pos"`         // pos_category, e.g. "verb"
-	POSDisplay  string  `json:"pos_display"` // raw dict abbrev, e.g. "v.tr."
+	POS         string  `json:"pos"` // per-sense English POS, e.g. "noun", "adjective"
 	English     string  `json:"english"`
 	Spanish     Spanish `json:"spanish"`
 	OtherSenses int     `json:"other_senses"` // count of other cards sharing this word
+}
+
+// Intervals holds the human-readable "next review in …" estimate for each of
+// the four FSRS ratings, previewed at the moment the card is served.
+type Intervals struct {
+	Again string `json:"again"`
+	Hard  string `json:"hard"`
+	Good  string `json:"good"`
+	Easy  string `json:"easy"`
+}
+
+// SessionCard is one position in a study session: the card, the FSRS interval
+// preview, whether it's a brand-new word, and the user's rating so far.
+type SessionCard struct {
+	Position int       `json:"position"`
+	Card     Card      `json:"card"`
+	IsNew    bool      `json:"is_new"`  // first time this word is being introduced
+	Preview  Intervals `json:"preview"` // predicted next interval per rating
+	Answered bool      `json:"answered"`
+	Rating   *int      `json:"rating"` // 1..4 (Again/Hard/Good/Easy), nil until answered
 }
 
 // Level is a vocabulary level with the number of (translated) cards in it.
@@ -27,28 +46,26 @@ type Level struct {
 	Count int    `json:"count"`
 }
 
-// SessionCard is one position in a study session: the card plus the user's
-// self-graded result so far.
-type SessionCard struct {
-	Position int   `json:"position"`
-	Card     Card  `json:"card"`
-	Answered bool  `json:"answered"`
-	Correct  *bool `json:"correct"` // nil until answered
-}
-
 // Session is a study session and its ordered cards.
 type Session struct {
 	ID        int64         `json:"id"`
 	Levels    []string      `json:"levels"`
-	Size      int           `json:"size"`
 	Completed bool          `json:"completed"`
+	NewCount  int           `json:"new_count"`    // new cards introduced in this session
+	DueCount  int           `json:"due_count"`    // due reviews in this session
 	Cards     []SessionCard `json:"cards"`
 }
 
-// Progress summarises how far through a session the user is.
+// Progress summarises how far through a session the user is. "Remembered"
+// counts ratings of Hard/Good/Easy (i.e. not Again).
 type Progress struct {
-	Answered  int  `json:"answered"`
-	Correct   int  `json:"correct"`
-	Total     int  `json:"total"`
-	Completed bool `json:"completed"`
+	Answered   int  `json:"answered"`
+	Remembered int  `json:"remembered"`
+	Total      int  `json:"total"`
+	Completed  bool `json:"completed"`
+}
+
+// Settings holds the per-user study configuration.
+type Settings struct {
+	NewCardsPerDay int `json:"new_cards_per_day"`
 }

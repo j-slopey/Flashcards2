@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { api, type Session } from './api'
+import { api, Rating, type RatingValue, type Session } from './api'
 import { Setup } from './screens/Setup'
 import { Play } from './screens/Play'
 import { Summary } from './screens/Summary'
@@ -7,8 +7,9 @@ import { Summary } from './screens/Summary'
 type Phase =
   | { name: 'setup' }
   | { name: 'loading' }
-  | { name: 'play'; session: Session; index: number; correct: number }
-  | { name: 'done'; correct: number; total: number }
+  | { name: 'empty' }
+  | { name: 'play'; session: Session; index: number; remembered: number }
+  | { name: 'done'; remembered: number; total: number }
 
 export default function App() {
   const [phase, setPhase] = useState<Phase>({ name: 'setup' })
@@ -18,29 +19,33 @@ export default function App() {
     setError(null)
     setPhase({ name: 'loading' })
     try {
-      const session = await api.createSession(levels, 20)
-      setPhase({ name: 'play', session, index: 0, correct: 0 })
+      const session = await api.createSession(levels)
+      if (session.cards.length === 0) {
+        setPhase({ name: 'empty' })
+      } else {
+        setPhase({ name: 'play', session, index: 0, remembered: 0 })
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
       setPhase({ name: 'setup' })
     }
   }
 
-  const grade = async (correct: boolean) => {
+  const grade = (rating: RatingValue) => {
     if (phase.name !== 'play') return
     const { session, index } = phase
     const card = session.cards[index].card
 
-    // Record the self-graded result; advance optimistically regardless so a
-    // logging hiccup never blocks studying.
-    api.answer(session.id, card.id, correct).catch(() => {})
+    // Log the rating; advance optimistically so a logging hiccup never blocks
+    // studying (the FSRS state is the source of truth and will catch up).
+    api.answer(session.id, card.id, rating).catch(() => {})
 
-    const nextCorrect = phase.correct + (correct ? 1 : 0)
+    const nextRemembered = phase.remembered + (rating !== Rating.Again ? 1 : 0)
     const nextIndex = index + 1
     if (nextIndex >= session.cards.length) {
-      setPhase({ name: 'done', correct: nextCorrect, total: session.cards.length })
+      setPhase({ name: 'done', remembered: nextRemembered, total: session.cards.length })
     } else {
-      setPhase({ ...phase, index: nextIndex, correct: nextCorrect })
+      setPhase({ ...phase, index: nextIndex, remembered: nextRemembered })
     }
   }
 
@@ -51,15 +56,28 @@ export default function App() {
           <p className="subtitle">Building your session…</p>
         </div>
       )
+    case 'empty':
+      return (
+        <div className="app">
+          <h1>All caught up 🎉</h1>
+          <p className="subtitle">
+            Nothing is due right now and you've hit today's new-card limit. Come
+            back later, or raise the daily limit.
+          </p>
+          <button className="btn-primary" onClick={() => setPhase({ name: 'setup' })}>
+            Back
+          </button>
+        </div>
+      )
     case 'play': {
       const sc = phase.session.cards[phase.index]
       return (
         <Play
           key={sc.card.id}
-          card={sc.card}
+          sessionCard={sc}
           index={phase.index}
           total={phase.session.cards.length}
-          correctSoFar={phase.correct}
+          rememberedSoFar={phase.remembered}
           onGrade={grade}
         />
       )
@@ -67,7 +85,7 @@ export default function App() {
     case 'done':
       return (
         <Summary
-          correct={phase.correct}
+          remembered={phase.remembered}
           total={phase.total}
           onRestart={() => setPhase({ name: 'setup' })}
         />

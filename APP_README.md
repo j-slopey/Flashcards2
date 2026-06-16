@@ -1,17 +1,19 @@
 # Flashcards app
 
 A web flashcard trainer over the Italian vocabulary in `flashcards.db`, with a
-Spanish-cognate / false-friend bridge for Spanish speakers learning Italian.
+Spanish-cognate / false-friend bridge for Spanish speakers learning Italian and
+**FSRS spaced repetition**.
 
 ```
 flashcards.db        # content (Python pipeline owns the `flashcards` table)
-backend/             # Go API + app tables (users, sessions, session_cards, reviews)
+backend/             # Go API + app tables + FSRS scheduling
 frontend/            # React + Vite + TypeScript study UI
 ```
 
 The Go backend opens the **same** `flashcards.db`, never rewriting the
-pipeline's `flashcards` table, and adds its own progress tables via an
-idempotent migration on startup.
+pipeline's `flashcards` table, and adds its own tables via an idempotent
+migration on startup: `users`, `user_settings`, `sessions`, `session_cards`,
+`reviews`, and `card_states` (per-user FSRS memory state).
 
 ## Run it
 
@@ -21,7 +23,19 @@ idempotent migration on startup.
 cd backend
 go run .
 # overrides: FLASHCARDS_DB=/abs/path/flashcards.db PORT=9000 go run .
+# pronunciations (optional): GEMINI_API_KEY=... go run .
 ```
+
+Environment variables:
+
+| Var | Default | Purpose |
+| --- | --- | --- |
+| `FLASHCARDS_DB` | `../flashcards.db` | SQLite path |
+| `PORT` | `8080` | listen port |
+| `GEMINI_API_KEY` | — | enables server-side TTS; unset = browser-TTS fallback |
+| `TTS_MODEL` | `gemini-2.5-flash-preview-tts` | Gemini TTS model |
+| `TTS_VOICE` | `Kore` | prebuilt voice name |
+| `AUDIO_CACHE_DIR` | `audiocache` | where generated clips are cached |
 
 **Frontend** (default port 5173, proxies `/api` -> `localhost:8080`):
 
@@ -39,27 +53,63 @@ Open http://localhost:5173, pick one or more vocabulary levels, and study.
 cd backend && go test ./...
 ```
 
+## How studying works (FSRS)
+
+- A **card** is one (word, part-of-speech sense). It carries `other_senses` so
+  the UI flags words with multiple meanings, and an interval `preview` (the
+  predicted next due time for each rating, shown under the buttons).
+- Each review is graded on the four **FSRS ratings**: Again / Hard / Good / Easy.
+- Scheduling uses [`go-fsrs/v3`](https://github.com/open-spaced-repetition/go-fsrs).
+  After each rating the card's memory state (stability, difficulty, due date) is
+  saved to `card_states`, and the raw grade is logged to `reviews`.
+- A **session** for the chosen levels = every card currently **due**, followed
+  by **new** cards up to the remaining daily allowance. Both are filtered to the
+  selected levels. If nothing is due and the daily new-card limit is reached, the
+  session is empty ("all caught up").
+- The **new-cards-per-day** limit (default 20) is a per-user setting; due reviews
+  are never capped.
+
+## Pronunciation (TTS)
+
+Clicking the speaker on a card plays the Italian pronunciation. The frontend
+calls `GET /api/audio?word=…`; the backend **lazily synthesizes** the word with
+Gemini TTS (forced `it-IT`) on first request, caches the WAV to
+`AUDIO_CACHE_DIR`, and serves the cached file instantly thereafter. If
+`GEMINI_API_KEY` is unset (or the request fails), the frontend **falls back to
+the browser Web Speech API** automatically. Audio is keyed per distinct word
+(SHA-1, case/space-insensitive), so the ~9k cards collapse to ~7.2k clips.
+
 ## API
 
-| Method | Path                         | Body / notes                              |
-| ------ | ---------------------------- | ----------------------------------------- |
-| GET    | `/api/health`                | liveness                                  |
-| GET    | `/api/levels`                | levels + translated-card counts           |
-| POST   | `/api/sessions`              | `{ "levels": ["Fondamentale"], "size": 20 }` |
-| GET    | `/api/sessions/{id}`         | resume a session                          |
-| POST   | `/api/sessions/{id}/answers` | `{ "card_id": 123, "correct": true }`     |
-
-A **card** is one (word, part-of-speech sense). Each card carries `other_senses`
-(how many other senses the same word has) so the UI can flag words with
-multiple meanings.
+| Method | Path                         | Body / notes                                  |
+| ------ | ---------------------------- | --------------------------------------------- |
+| GET    | `/api/health`                | liveness                                      |
+| GET    | `/api/levels`                | levels + translated-card counts               |
+| GET    | `/api/settings`              | `{ "new_cards_per_day": 20 }`                 |
+| PUT    | `/api/settings`              | `{ "new_cards_per_day": 10 }`                 |
+| POST   | `/api/sessions`              | `{ "levels": ["Fondamentale"] }`              |
+| GET    | `/api/sessions/{id}`         | resume a session                              |
+| POST   | `/api/sessions/{id}/answers` | `{ "card_id": 123, "rating": 3 }` (1–4)       |
+| GET    | `/api/audio?word=…`          | WAV pronunciation (503 if TTS not configured) |
 
 ## Extending toward the full vision
 
-- **Spaced repetition:** every answer is logged to `reviews(user_id, card_id,
-  correct, reviewed_at)`. Replace the random `ORDER BY RANDOM()` query in
-  `store.NewSession` with a picker that consults `reviews` to choose ~20 new
-  words plus occasional due reviews. No API or frontend change needed.
-- **Real accounts:** the schema already keys everything on `user_id` (currently
-  the seeded `DefaultUserID = 1`). Add auth + a real user id resolver.
-- **Answer choices / auto-grading:** the card payload already has everything
-  needed to generate distractors; add a new endpoint and a quiz screen.
+- **Adaptive new-card pacing:** the daily limit is currently a fixed user
+  setting. `store.NewSession` already computes today's introductions, so a
+  load-based picker (grow when caught up, throttle under backlog) can replace the
+  constant without schema changes.
+- **Real accounts:** everything keys on `user_id` (seeded `DefaultUserID = 1`).
+  Add auth + a real user-id resolver; `card_states`/`reviews` are already
+  per-user.
+- **Answer choices / auto-grading:** the card payload has everything needed to
+  generate distractors; add an endpoint + quiz screen, and map results to a
+  rating.
+
+## Notes
+
+- Card identity is the `flashcards.rowid`. A full content rebuild
+  (`build_db.py`) can renumber rowids and orphan `card_states`/`reviews`; if you
+  rebuild often, switch to a stable natural key.
+- The migration self-heals from the pre-FSRS schema: legacy `sessions` (with a
+  `size` column) and their `session_cards`/`reviews` are dropped and recreated,
+  since they held no FSRS state.
