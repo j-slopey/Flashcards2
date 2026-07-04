@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Rating, type RatingValue, type SessionCard } from '../api'
+import { api, Rating, type RatingValue, type Sentence, type SessionCard } from '../api'
 import { playPronunciation } from '../speech'
 
 interface Props {
@@ -29,6 +29,12 @@ export function Play({ sessionCard, index, total, rememberedSoFar, onGrade }: Pr
   const [speaking, setSpeaking] = useState(false)
   const { card, preview, is_new } = sessionCard
 
+  // Example sentences: lazily fetched on demand (the backend generates+caches).
+  const [sentences, setSentences] = useState<Sentence[] | null>(null)
+  const [sIdx, setSIdx] = useState(0)
+  const [sLoading, setSLoading] = useState(false)
+  const [sError, setSError] = useState<string | null>(null)
+
   const speak = async () => {
     setSpeaking(true)
     try {
@@ -36,6 +42,26 @@ export function Play({ sessionCard, index, total, rememberedSoFar, onGrade }: Pr
     } finally {
       setSpeaking(false)
     }
+  }
+
+  const loadSentences = async () => {
+    setSLoading(true)
+    setSError(null)
+    try {
+      const list = await api.sentences(card.word)
+      setSentences(list)
+      setSIdx(0)
+      if (list.length === 0) setSError('No example sentence available.')
+    } catch {
+      setSError('Example sentences are unavailable right now.')
+    } finally {
+      setSLoading(false)
+    }
+  }
+
+  const stepSentence = (delta: number) => {
+    if (!sentences || sentences.length === 0) return
+    setSIdx((i) => (i + delta + sentences.length) % sentences.length)
   }
 
   const grade = (rating: RatingValue) => {
@@ -113,6 +139,45 @@ export function Play({ sessionCard, index, total, rememberedSoFar, onGrade }: Pr
               {card.spanish.note && (
                 <div className="spanish-note">{card.spanish.note}</div>
               )}
+            </div>
+
+            <div className="examples">
+              {sentences === null ? (
+                <button
+                  className="btn-ghost"
+                  onClick={loadSentences}
+                  disabled={sLoading}
+                >
+                  {sLoading ? 'Loading example…' : 'Show example sentence'}
+                </button>
+              ) : sentences.length > 0 ? (
+                <div className="sentence">
+                  <div className="sentence-it">{sentences[sIdx].italian}</div>
+                  <div className="sentence-en">{sentences[sIdx].english}</div>
+                  {sentences.length > 1 && (
+                    <div className="sentence-nav">
+                      <button
+                        className="arrow"
+                        onClick={() => stepSentence(-1)}
+                        aria-label="Previous example"
+                      >
+                        ‹
+                      </button>
+                      <span className="sentence-count">
+                        {sIdx + 1} / {sentences.length}
+                      </span>
+                      <button
+                        className="arrow"
+                        onClick={() => stepSentence(1)}
+                        aria-label="Next example"
+                      >
+                        ›
+                      </button>
+                    </div>
+                  )}
+                </div>
+              ) : null}
+              {sError && <div className="sentence-error">{sError}</div>}
             </div>
           </>
         )}

@@ -32,6 +32,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/sessions/{id}", s.getSession)
 	mux.HandleFunc("POST /api/sessions/{id}/answers", s.postAnswer)
 	mux.HandleFunc("GET /api/audio", s.audio)
+	mux.HandleFunc("GET /api/sentences", s.sentences)
 	return cors(mux)
 }
 
@@ -70,21 +71,10 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, st)
 }
 
-type createSessionReq struct {
-	Levels []string `json:"levels"`
-}
-
-func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
-	var req createSessionReq
-	if err := decode(r, &req); err != nil {
-		writeErr(w, http.StatusBadRequest, err)
-		return
-	}
-	if len(req.Levels) == 0 {
-		writeErr(w, http.StatusBadRequest, errors.New("levels must not be empty"))
-		return
-	}
-	sess, err := s.Store.NewSession(req.Levels)
+// createSession starts a session. Which levels its new cards come from is
+// decided by the backend from curriculum progress, so the request has no body.
+func (s *Server) createSession(w http.ResponseWriter, _ *http.Request) {
+	sess, err := s.Store.NewSession()
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
@@ -159,6 +149,25 @@ func (s *Server) audio(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "audio/wav")
 	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 	w.Write(data)
+}
+
+// sentences returns example sentences for a word, generating one on first use.
+func (s *Server) sentences(w http.ResponseWriter, r *http.Request) {
+	word := strings.TrimSpace(r.URL.Query().Get("word"))
+	if word == "" || len([]rune(word)) > 64 {
+		writeErr(w, http.StatusBadRequest, errors.New("missing or oversized word"))
+		return
+	}
+	list, err := s.Store.Sentences(r.Context(), word)
+	if errors.Is(err, store.ErrSentencesUnavailable) {
+		writeErr(w, http.StatusServiceUnavailable, err)
+		return
+	}
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"sentences": list})
 }
 
 // --- helpers ---

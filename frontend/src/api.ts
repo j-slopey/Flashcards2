@@ -51,6 +51,10 @@ export interface Session {
 export interface Level {
   level: string
   count: number
+  learned: number
+  mastery: number // 0..1
+  unlocked: boolean
+  order: number
 }
 
 export interface Progress {
@@ -62,6 +66,12 @@ export interface Progress {
 
 export interface Settings {
   new_cards_per_day: number
+}
+
+export interface Sentence {
+  id: number
+  italian: string
+  english: string
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -87,15 +97,17 @@ export const api = {
       body: JSON.stringify(settings),
     }),
 
-  createSession: (levels: string[]) =>
-    request<Session>('/sessions', {
-      method: 'POST',
-      body: JSON.stringify({ levels }),
-    }),
+  createSession: () =>
+    request<Session>('/sessions', { method: 'POST' }),
 
   answer: (sessionId: number, cardId: number, rating: RatingValue) =>
     request<Progress>(`/sessions/${sessionId}/answers`, {
       method: 'POST',
       body: JSON.stringify({ card_id: cardId, rating }),
     }),
+
+  sentences: (word: string) =>
+    request<{ sentences: Sentence[] }>(
+      `/sentences?word=${encodeURIComponent(word)}`,
+    ).then((r) => r.sentences ?? []),
 }

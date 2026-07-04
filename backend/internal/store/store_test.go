@@ -93,7 +93,7 @@ func TestNewSessionAllNewWhenNothingSeen(t *testing.T) {
 	if err := s.SetSettings(Settings{NewCardsPerDay: 3}); err != nil {
 		t.Fatalf("SetSettings: %v", err)
 	}
-	sess, err := s.NewSession([]string{"Fondamentale"})
+	sess, err := s.NewSession()
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -110,18 +110,65 @@ func TestNewSessionAllNewWhenNothingSeen(t *testing.T) {
 	}
 }
 
-func TestLevelsFilterEverything(t *testing.T) {
+// markLearned forces every translatable card in a level into FSRS Review state
+// with a far-future due date, simulating a learner who has mastered that level
+// without those cards showing up as "due" or "introduced today".
+func markLearned(t *testing.T, s *Store, level string) {
+	t.Helper()
+	future := s.now().AddDate(1, 0, 0)
+	past := s.now().AddDate(0, 0, -30)
+	_, err := s.db.Exec(`
+		INSERT INTO card_states
+		    (user_id, card_id, due, stability, difficulty, elapsed_days,
+		     scheduled_days, reps, lapses, state, last_review, introduced_at, updated_at)
+		SELECT ?, f.rowid, ?, 100, 5, 0, 100, 5, 0, ?, ?, ?, ?
+		FROM flashcards f WHERE f.level = ? AND f.english <> ''`,
+		DefaultUserID, ftime(future), int(2 /* fsrs.Review */), ftime(past),
+		ftime(past), ftime(past), level)
+	if err != nil {
+		t.Fatalf("markLearned: %v", err)
+	}
+}
+
+func TestHigherLevelsLockedUntilMastery(t *testing.T) {
 	s, _ := newTestStore(t)
-	sess, err := s.NewSession([]string{"Alto Uso"})
+	if err := s.SetSettings(Settings{NewCardsPerDay: 50}); err != nil {
+		t.Fatalf("SetSettings: %v", err)
+	}
+	sess, err := s.NewSession()
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	if len(sess.Cards) != 2 {
-		t.Fatalf("want 2 Alto Uso cards, got %d", len(sess.Cards))
+	// Nothing learned yet: only the first level should ever appear.
+	if sess.NewCount != 8 {
+		t.Fatalf("want 8 Fondamentale new cards, got %d", sess.NewCount)
+	}
+	for _, sc := range sess.Cards {
+		if sc.Card.Level != "Fondamentale" {
+			t.Errorf("locked level leaked: %s", sc.Card.Level)
+		}
+	}
+}
+
+func TestHigherLevelUnlocksAfterMastery(t *testing.T) {
+	s, _ := newTestStore(t)
+	if err := s.SetSettings(Settings{NewCardsPerDay: 50}); err != nil {
+		t.Fatalf("SetSettings: %v", err)
+	}
+	// Master all of Fondamentale; its cards are now introduced + learned, so the
+	// only un-introduced cards left live in the (now unlocked) Alto Uso level.
+	markLearned(t, s, "Fondamentale")
+
+	sess, err := s.NewSession()
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	if sess.NewCount != 2 {
+		t.Fatalf("want 2 Alto Uso new cards once unlocked, got %d", sess.NewCount)
 	}
 	for _, sc := range sess.Cards {
 		if sc.Card.Level != "Alto Uso" {
-			t.Errorf("leaked card from level %s", sc.Card.Level)
+			t.Errorf("unexpected level %s", sc.Card.Level)
 		}
 	}
 }
@@ -132,7 +179,7 @@ func TestDailyNewLimitAcrossSessions(t *testing.T) {
 		t.Fatalf("SetSettings: %v", err)
 	}
 
-	sess, err := s.NewSession([]string{"Fondamentale"})
+	sess, err := s.NewSession()
 	if err != nil {
 		t.Fatalf("NewSession 1: %v", err)
 	}
@@ -147,7 +194,7 @@ func TestDailyNewLimitAcrossSessions(t *testing.T) {
 	}
 
 	// Same day: daily new allowance exhausted, nothing due yet -> empty session.
-	sess2, err := s.NewSession([]string{"Fondamentale"})
+	sess2, err := s.NewSession()
 	if err != nil {
 		t.Fatalf("NewSession 2: %v", err)
 	}
@@ -157,7 +204,7 @@ func TestDailyNewLimitAcrossSessions(t *testing.T) {
 
 	// Next day: the two introduced cards are now due for review.
 	*clock = clock.AddDate(0, 0, 1)
-	sess3, err := s.NewSession([]string{"Fondamentale"})
+	sess3, err := s.NewSession()
 	if err != nil {
 		t.Fatalf("NewSession 3: %v", err)
 	}
@@ -174,7 +221,7 @@ func TestRecordReviewSchedulesAndCompletes(t *testing.T) {
 	if err := s.SetSettings(Settings{NewCardsPerDay: 2}); err != nil {
 		t.Fatalf("SetSettings: %v", err)
 	}
-	sess, err := s.NewSession([]string{"Fondamentale"})
+	sess, err := s.NewSession()
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -213,7 +260,7 @@ func TestGetSessionReflectsRatings(t *testing.T) {
 	if err := s.SetSettings(Settings{NewCardsPerDay: 2}); err != nil {
 		t.Fatalf("SetSettings: %v", err)
 	}
-	sess, _ := s.NewSession([]string{"Fondamentale"})
+	sess, _ := s.NewSession()
 	if _, err := s.RecordReview(sess.ID, sess.Cards[0].Card.ID, 3); err != nil {
 		t.Fatalf("RecordReview: %v", err)
 	}
@@ -241,7 +288,7 @@ func TestNewSessionEmptyWhenNothingToStudy(t *testing.T) {
 	if err := s.SetSettings(Settings{NewCardsPerDay: 0}); err != nil {
 		t.Fatalf("SetSettings: %v", err)
 	}
-	sess, err := s.NewSession([]string{"Fondamentale"})
+	sess, err := s.NewSession()
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -252,7 +299,7 @@ func TestNewSessionEmptyWhenNothingToStudy(t *testing.T) {
 
 func TestRecordReviewRejectsBadRating(t *testing.T) {
 	s, _ := newTestStore(t)
-	sess, _ := s.NewSession([]string{"Fondamentale"})
+	sess, _ := s.NewSession()
 	if _, err := s.RecordReview(sess.ID, sess.Cards[0].Card.ID, 5); err == nil {
 		t.Fatal("expected error for rating 5")
 	}
@@ -260,7 +307,7 @@ func TestRecordReviewRejectsBadRating(t *testing.T) {
 
 func TestRecordReviewUnknownCard(t *testing.T) {
 	s, _ := newTestStore(t)
-	sess, _ := s.NewSession([]string{"Fondamentale"})
+	sess, _ := s.NewSession()
 	if _, err := s.RecordReview(sess.ID, 999999, 3); err == nil {
 		t.Fatal("expected ErrNotFound for card not in session")
 	}

@@ -40,10 +40,15 @@ type SessionCard struct {
 	Rating   *int      `json:"rating"` // 1..4 (Again/Hard/Good/Easy), nil until answered
 }
 
-// Level is a vocabulary level with the number of (translated) cards in it.
+// Level is a vocabulary level in the fixed curriculum order, with the learner's
+// progress through it. A level is Unlocked once every earlier level is mastered.
 type Level struct {
-	Level string `json:"level"`
-	Count int    `json:"count"`
+	Level    string  `json:"level"`
+	Count    int     `json:"count"`    // translatable cards in the level
+	Learned  int     `json:"learned"`  // cards graduated to FSRS Review state
+	Mastery  float64 `json:"mastery"`  // Learned / Count, in [0,1]
+	Unlocked bool    `json:"unlocked"` // new cards from this level may be introduced
+	Order    int     `json:"order"`    // teaching order (0 = first)
 }
 
 // Session is a study session and its ordered cards.
@@ -68,4 +73,11 @@ type Progress struct {
 // Settings holds the per-user study configuration.
 type Settings struct {
 	NewCardsPerDay int `json:"new_cards_per_day"`
+}
+
+// Sentence is an example sentence with its English translation.
+type Sentence struct {
+	ID      int64  `json:"id"`
+	Italian string `json:"italian"`
+	English string `json:"english"`
 }

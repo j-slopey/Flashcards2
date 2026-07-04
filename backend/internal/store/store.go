@@ -9,7 +9,9 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"strings"
+	"sync"
 	"time"
 
 	fsrs "github.com/open-spaced-repetition/go-fsrs/v3"
@@ -23,6 +25,16 @@ const DefaultUserID int64 = 1
 // DefaultNewCardsPerDay seeds a new user's daily new-card allowance.
 const DefaultNewCardsPerDay = 20
 
+// curriculum is the fixed teaching order of vocabulary levels. The learner works
+// through them front to back: a level only starts contributing new cards once
+// every earlier level is mastered (see masteryThreshold).
+var curriculum = []string{"Fondamentale", "Alto Uso", "Alta Disponibilità"}
+
+// masteryThreshold is the fraction of a level that must be learned (graduated to
+// FSRS Review state) before the next level unlocks. Even past this gate the next
+// level only trickles in, ramping to full as the prior level approaches 100%.
+const masteryThreshold = 0.95
+
 // ErrNotFound is returned when a session (or card within a session) is missing.
 var ErrNotFound = errors.New("not found")
 
@@ -31,6 +43,11 @@ type Store struct {
 	db    *sql.DB
 	fsrs  *fsrs.FSRS
 	clock func() time.Time // overridable in tests
+
+	// sentenceGen lazily generates example sentences (nil = feature disabled).
+	sentenceGen SentenceGenerator
+	smu         sync.Mutex
+	slocks      map[string]*sync.Mutex // per-word generation locks
 }
 
 // Open opens the SQLite database at path and applies the app migrations.
@@ -46,9 +63,10 @@ func Open(path string) (*Store, error) {
 		return nil, fmt.Errorf("set pragmas: %w", err)
 	}
 	s := &Store{
-		db:    db,
-		fsrs:  fsrs.NewFSRS(fsrs.DefaultParam()),
-		clock: time.Now,
+		db:     db,
+		fsrs:   fsrs.NewFSRS(fsrs.DefaultParam()),
+		clock:  time.Now,
+		slocks: map[string]*sync.Mutex{},
 	}
 	if err := s.migrate(); err != nil {
 		_ = db.Close()
@@ -142,6 +160,23 @@ CREATE TABLE IF NOT EXISTS card_states (
     PRIMARY KEY (user_id, card_id)
 );
 CREATE INDEX IF NOT EXISTS idx_card_states_user_due ON card_states(user_id, due);
+-- Example sentences (shared content, not per-user). One sentence can serve many
+-- words; the join table records the exact surface form of each word as written
+-- in the sentence, which a future fill-in-the-blank / multiple-choice mode needs.
+CREATE TABLE IF NOT EXISTS sentences (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    italian    TEXT NOT NULL UNIQUE,
+    english    TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS sentence_words (
+    sentence_id INTEGER NOT NULL REFERENCES sentences(id),
+    word        TEXT NOT NULL,    -- matches flashcards.word (the lemma)
+    surface     TEXT NOT NULL,    -- exact form as written in the sentence
+    focus       INTEGER NOT NULL DEFAULT 0, -- 1 = the word this was generated for
+    PRIMARY KEY (sentence_id, word)
+);
+CREATE INDEX IF NOT EXISTS idx_sentence_words_word ON sentence_words(word);
 `
 	if _, err := s.db.Exec(schema); err != nil {
 		return fmt.Errorf("migrate: %w", err)
@@ -268,26 +303,82 @@ func scanCard(rows *sql.Rows) (Card, error) {
 	return c, nil
 }
 
-// Levels returns the vocabulary levels and how many translated cards each has.
-func (s *Store) Levels() ([]Level, error) {
+// levelStat is the raw progress through one level: translatable cards and how
+// many of them the learner has graduated to FSRS Review state.
+type levelStat struct{ total, learned int }
+
+// levelStats counts, per level, the translatable cards and the learned ones
+// (FSRS Review state) for the current user.
+func (s *Store) levelStats() (map[string]levelStat, error) {
 	rows, err := s.db.Query(`
-		SELECT level, COUNT(*) FROM flashcards
-		WHERE english IS NOT NULL AND english <> ''
-		GROUP BY level ORDER BY level`)
+		SELECT f.level,
+		       SUM(CASE WHEN f.english IS NOT NULL AND f.english <> '' THEN 1 ELSE 0 END),
+		       SUM(CASE WHEN cs.state = ? THEN 1 ELSE 0 END)
+		FROM flashcards f
+		LEFT JOIN card_states cs
+		  ON cs.card_id = f.rowid AND cs.user_id = ?
+		GROUP BY f.level`, int(fsrs.Review), DefaultUserID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	var out []Level
+	stats := map[string]levelStat{}
 	for rows.Next() {
-		var l Level
-		if err := rows.Scan(&l.Level, &l.Count); err != nil {
+		var level string
+		var st levelStat
+		if err := rows.Scan(&level, &st.total, &st.learned); err != nil {
 			return nil, err
 		}
-		out = append(out, l)
+		stats[level] = st
 	}
-	return out, rows.Err()
+	return stats, rows.Err()
+}
+
+// masteryOf is the learned fraction of a level (0 when it has no cards).
+func masteryOf(st levelStat) float64 {
+	if st.total == 0 {
+		return 0
+	}
+	return float64(st.learned) / float64(st.total)
+}
+
+// curriculumProgress returns the levels in teaching order, each annotated with
+// its mastery and a cumulative unlock flag: a level unlocks only once every
+// earlier level is at or above masteryThreshold.
+func curriculumProgress(stats map[string]levelStat) []Level {
+	out := make([]Level, 0, len(curriculum))
+	prevMastered := true // there is no level before the first, so it's open
+	for i, name := range curriculum {
+		st := stats[name]
+		m := masteryOf(st)
+		unlocked := i == 0 || prevMastered
+		out = append(out, Level{
+			Level: name, Count: st.total, Learned: st.learned,
+			Mastery: m, Unlocked: unlocked, Order: i,
+		})
+		prevMastered = unlocked && m >= masteryThreshold
+	}
+	return out
+}
+
+// rampShare returns the fraction (0..1) of the daily new-card budget a level may
+// use, given the mastery of the level before it. At the unlock threshold it is 0
+// (so the next level barely trickles in) and climbs to 1 as the prior level
+// approaches fully learned, keeping higher levels rare until lower ones are solid.
+func rampShare(prevMastery float64) float64 {
+	r := (prevMastery - masteryThreshold) / (1 - masteryThreshold)
+	return math.Max(0, math.Min(1, r))
+}
+
+// Levels returns the curriculum levels with the learner's progress and which
+// are currently unlocked.
+func (s *Store) Levels() ([]Level, error) {
+	stats, err := s.levelStats()
+	if err != nil {
+		return nil, err
+	}
+	return curriculumProgress(stats), nil
 }
 
 // --- FSRS card state persistence ---
@@ -410,32 +501,69 @@ func (s *Store) queryCards(suffix string, args ...any) ([]Card, error) {
 	return cards, rows.Err()
 }
 
-// NewSession builds an FSRS-native session for the chosen levels: every card
-// currently due for review, followed by new cards up to the remaining daily
-// allowance. Both are filtered to the selected levels.
+// pickNewCards draws up to `remaining` brand-new cards, walking the curriculum
+// front to back. The first level is unlimited within the budget; each later
+// (unlocked) level is capped at its rampShare of the full daily budget, so
+// higher levels stay rare until the level before them is nearly fully learned.
+// Lower levels are filled first, so leftovers there are always preferred.
+func (s *Store) pickNewCards(progress []Level, dailyBudget, remaining int) ([]Card, error) {
+	if remaining <= 0 {
+		return nil, nil
+	}
+	var fresh []Card
+	for i, lvl := range progress {
+		if remaining <= 0 {
+			break
+		}
+		if !lvl.Unlocked {
+			break // levels are cumulative: nothing past a locked one is open
+		}
+		limit := remaining
+		if i > 0 {
+			// Trickle in: at most this level's ramped share of the day's budget,
+			// but always allow at least one so an unlocked level can appear.
+			cap := int(math.Round(rampShare(progress[i-1].Mastery) * float64(dailyBudget)))
+			if cap < 1 {
+				cap = 1
+			}
+			if cap < limit {
+				limit = cap
+			}
+		}
+		cards, err := s.queryCards(`
+			WHERE f.level = ? AND f.english <> ''
+			  AND f.rowid NOT IN (SELECT card_id FROM card_states WHERE user_id = ?)
+			ORDER BY RANDOM() LIMIT ?`, lvl.Level, DefaultUserID, limit)
+		if err != nil {
+			return nil, fmt.Errorf("new cards (%s): %w", lvl.Level, err)
+		}
+		fresh = append(fresh, cards...)
+		remaining -= len(cards)
+	}
+	return fresh, nil
+}
+
+// NewSession builds an FSRS-native session: every card currently due for review,
+// followed by new cards up to the remaining daily allowance. The levels new
+// cards are drawn from are decided automatically by curriculum progress — the
+// learner advances to a level only once the previous one is mastered.
 //
 // If nothing is due and the new-card limit is exhausted, it returns a session
 // with no cards (ID 0) and no row is written.
-func (s *Store) NewSession(levels []string) (*Session, error) {
-	if len(levels) == 0 {
-		return nil, errors.New("at least one level is required")
-	}
+func (s *Store) NewSession() (*Session, error) {
 	now := s.now()
-	ph := placeholders(len(levels))
-	levelArgs := toAny(levels)
 
-	// 1. Due reviews within the selected levels, soonest-due first.
-	dueArgs := append([]any{DefaultUserID}, levelArgs...)
-	dueArgs = append(dueArgs, s.nowStr())
+	// 1. Every due review (all started cards live in unlocked levels already),
+	//    soonest-due first.
 	due, err := s.queryCards(`
 		JOIN card_states cs ON cs.card_id = f.rowid AND cs.user_id = ?
-		WHERE f.level IN (`+ph+`) AND cs.due <= ?
-		ORDER BY cs.due ASC`, dueArgs...)
+		WHERE cs.due <= ?
+		ORDER BY cs.due ASC`, DefaultUserID, s.nowStr())
 	if err != nil {
 		return nil, fmt.Errorf("due cards: %w", err)
 	}
 
-	// 2. New cards, capped by the remaining daily allowance.
+	// 2. New cards, gated and ramped by curriculum progress.
 	settings, err := s.GetSettings()
 	if err != nil {
 		return nil, err
@@ -444,20 +572,24 @@ func (s *Store) NewSession(levels []string) (*Session, error) {
 	if err != nil {
 		return nil, err
 	}
-	remaining := settings.NewCardsPerDay - introduced
-	var fresh []Card
-	if remaining > 0 {
-		newArgs := append(append([]any{}, levelArgs...), DefaultUserID, remaining)
-		fresh, err = s.queryCards(`
-			WHERE f.level IN (`+ph+`) AND f.english <> ''
-			  AND f.rowid NOT IN (SELECT card_id FROM card_states WHERE user_id = ?)
-			ORDER BY RANDOM() LIMIT ?`, newArgs...)
-		if err != nil {
-			return nil, fmt.Errorf("new cards: %w", err)
+	stats, err := s.levelStats()
+	if err != nil {
+		return nil, err
+	}
+	progress := curriculumProgress(stats)
+	fresh, err := s.pickNewCards(progress, settings.NewCardsPerDay, settings.NewCardsPerDay-introduced)
+	if err != nil {
+		return nil, err
+	}
+
+	var unlocked []string
+	for _, l := range progress {
+		if l.Unlocked {
+			unlocked = append(unlocked, l.Level)
 		}
 	}
 
-	sess := &Session{Levels: levels, DueCount: len(due), NewCount: len(fresh)}
+	sess := &Session{Levels: unlocked, DueCount: len(due), NewCount: len(fresh)}
 	if len(due)+len(fresh) == 0 {
 		return sess, nil // nothing to study right now
 	}
@@ -487,7 +619,7 @@ func (s *Store) NewSession(levels []string) (*Session, error) {
 
 	res, err := tx.Exec(
 		`INSERT INTO sessions (user_id, levels, created_at) VALUES (?, ?, ?)`,
-		DefaultUserID, strings.Join(levels, "\n"), s.nowStr())
+		DefaultUserID, strings.Join(unlocked, "\n"), s.nowStr())
 	if err != nil {
 		return nil, err
 	}
@@ -661,18 +793,6 @@ func (s *Store) RecordReview(sessionID, cardID int64, rating int) (*Progress, er
 }
 
 // --- small helpers ---
-
-func placeholders(n int) string {
-	return strings.TrimSuffix(strings.Repeat("?,", n), ",")
-}
-
-func toAny(ss []string) []any {
-	out := make([]any, len(ss))
-	for i, s := range ss {
-		out[i] = s
-	}
-	return out
-}
 
 func b2i(b bool) int {
 	if b {

@@ -75,8 +75,16 @@ func TestLevelsEndpoint(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &levels); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if len(levels) != 1 || levels[0].Count != 2 {
-		t.Fatalf("levels = %+v", levels)
+	// The curriculum always reports every level in order; the fixture only fills
+	// Fondamentale (the first, always unlocked).
+	if len(levels) != 3 {
+		t.Fatalf("want 3 curriculum levels, got %+v", levels)
+	}
+	if levels[0].Level != "Fondamentale" || levels[0].Count != 2 || !levels[0].Unlocked {
+		t.Fatalf("first level = %+v", levels[0])
+	}
+	if levels[1].Unlocked {
+		t.Fatalf("second level should be locked until the first is mastered: %+v", levels[1])
 	}
 }
 
@@ -104,10 +112,10 @@ func TestSessionLifecycle(t *testing.T) {
 	srv := newTestServer(t)
 	h := srv.Handler()
 
-	// Create a session (default new-card limit covers the 2 fixture cards).
-	body, _ := json.Marshal(createSessionReq{Levels: []string{"Fondamentale"}})
+	// Create a session (no body; the backend picks levels by curriculum progress,
+	// and the default new-card limit covers the 2 fixture cards).
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest("POST", "/api/sessions", bytes.NewReader(body)))
+	h.ServeHTTP(rec, httptest.NewRequest("POST", "/api/sessions", nil))
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("create status = %d body=%s", rec.Code, rec.Body)
 	}
@@ -146,9 +154,8 @@ func TestSessionLifecycle(t *testing.T) {
 func TestAnswerRejectsBadRating(t *testing.T) {
 	srv := newTestServer(t)
 	h := srv.Handler()
-	body, _ := json.Marshal(createSessionReq{Levels: []string{"Fondamentale"}})
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest("POST", "/api/sessions", bytes.NewReader(body)))
+	h.ServeHTTP(rec, httptest.NewRequest("POST", "/api/sessions", nil))
 	var sess store.Session
 	json.Unmarshal(rec.Body.Bytes(), &sess)
 
@@ -157,16 +164,6 @@ func TestAnswerRejectsBadRating(t *testing.T) {
 	h.ServeHTTP(rec, httptest.NewRequest("POST", "/api/sessions/"+strconv.FormatInt(sess.ID, 10)+"/answers", bytes.NewReader(ans)))
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("want 400 for bad rating, got %d", rec.Code)
-	}
-}
-
-func TestCreateSessionValidation(t *testing.T) {
-	srv := newTestServer(t)
-	body, _ := json.Marshal(createSessionReq{Levels: []string{}})
-	rec := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(rec, httptest.NewRequest("POST", "/api/sessions", bytes.NewReader(body)))
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("want 400, got %d", rec.Code)
 	}
 }
 
@@ -214,6 +211,46 @@ func TestAudioUnavailableWithoutSynth(t *testing.T) {
 	srv := newTestServer(t) // Audio is nil
 	rec := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/api/audio?word=ciao", nil))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("want 503, got %d", rec.Code)
+	}
+}
+
+// stubGen returns a canned sentence referencing the requested word.
+type stubGen struct{}
+
+func (stubGen) Generate(_ context.Context, word string) (store.SentenceDraft, error) {
+	return store.SentenceDraft{
+		Italian: "Una frase con " + word + ".",
+		English: "A sentence with " + word + ".",
+		Words:   []store.WordRef{{Lemma: word, Surface: word}},
+	}, nil
+}
+
+func TestSentencesEndpoint(t *testing.T) {
+	srv := newTestServer(t)
+	srv.Store.SetSentenceGenerator(stubGen{})
+
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/api/sentences?word=abbandonare", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body)
+	}
+	var resp struct {
+		Sentences []store.Sentence `json:"sentences"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Sentences) != 1 || resp.Sentences[0].English == "" {
+		t.Fatalf("sentences = %+v", resp.Sentences)
+	}
+}
+
+func TestSentencesUnavailable(t *testing.T) {
+	srv := newTestServer(t) // no generator configured
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/api/sentences?word=ciao", nil))
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("want 503, got %d", rec.Code)
 	}

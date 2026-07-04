@@ -62,31 +62,36 @@ h1 {
   margin-bottom: 1.75rem;
 }
 
-.level-option {
-  display: flex;
-  align-items: center;
-  gap: 0.85rem;
+.level-progress {
   padding: 1rem 1.1rem;
   background: var(--surface);
   border: 1.5px solid var(--line);
   border-radius: 14px;
-  cursor: pointer;
-  transition: border-color 0.15s, background 0.15s;
 }
 
-.level-option:hover {
-  border-color: #cfcdc4;
+.level-progress.locked {
+  opacity: 0.6;
 }
 
-.level-option.selected {
-  border-color: var(--accent);
-  background: var(--accent-soft);
+.level-progress-head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.85rem;
+  margin-bottom: 0.6rem;
 }
 
-.level-option input {
-  width: 18px;
-  height: 18px;
-  accent-color: var(--accent);
+.bar {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--line);
+  overflow: hidden;
+}
+
+.bar-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--accent);
+  transition: width 0.3s ease;
 }
 
 .level-name {
@@ -343,6 +348,73 @@ button:disabled {
   color: var(--muted);
   font-size: 0.9rem;
   line-height: 1.45;
+}
+
+/* --- Example sentences --- */
+.examples {
+  margin-top: 1.1rem;
+}
+
+.examples .btn-ghost {
+  width: 100%;
+  font-size: 0.92rem;
+}
+
+.sentence {
+  background: var(--bg);
+  border: 1.5px solid var(--line);
+  border-radius: 12px;
+  padding: 0.9rem 1rem;
+}
+
+.sentence-it {
+  font-size: 1.05rem;
+  line-height: 1.5;
+}
+
+.sentence-en {
+  margin-top: 0.4rem;
+  color: var(--muted);
+  font-size: 0.92rem;
+  line-height: 1.45;
+}
+
+.sentence-nav {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.9rem;
+  margin-top: 0.75rem;
+}
+
+.sentence-nav .arrow {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 1.5px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 1.2rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.sentence-nav .arrow:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.sentence-count {
+  color: var(--muted);
+  font-size: 0.85rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.sentence-error {
+  margin-top: 0.6rem;
+  color: var(--muted);
+  font-size: 0.88rem;
 }
 
 @keyframes fade {

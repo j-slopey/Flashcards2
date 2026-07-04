@@ -32,10 +32,11 @@ Environment variables:
 | --- | --- | --- |
 | `FLASHCARDS_DB` | `../flashcards.db` | SQLite path |
 | `PORT` | `8080` | listen port |
-| `GEMINI_API_KEY` | — | enables server-side TTS; unset = browser-TTS fallback |
+| `GEMINI_API_KEY` | — | enables server-side TTS + example sentences; unset = browser-TTS fallback and no sentences |
 | `TTS_MODEL` | `gemini-2.5-flash-preview-tts` | Gemini TTS model |
 | `TTS_VOICE` | `Kore` | prebuilt voice name |
 | `AUDIO_CACHE_DIR` | `audiocache` | where generated clips are cached |
+| `SENTENCE_MODEL` | `gemini-2.5-flash` | Gemini model for example sentences |
 
 **Frontend** (default port 5173, proxies `/api` -> `localhost:8080`):
 
@@ -45,7 +46,8 @@ npm install      # first time only
 npm run dev
 ```
 
-Open http://localhost:5173, pick one or more vocabulary levels, and study.
+Open http://localhost:5173 and study. There is no level picker: new words are
+introduced in curriculum order automatically (see below).
 
 ## Tests
 
@@ -62,12 +64,19 @@ cd backend && go test ./...
 - Scheduling uses [`go-fsrs/v3`](https://github.com/open-spaced-repetition/go-fsrs).
   After each rating the card's memory state (stability, difficulty, due date) is
   saved to `card_states`, and the raw grade is logged to `reviews`.
-- A **session** for the chosen levels = every card currently **due**, followed
-  by **new** cards up to the remaining daily allowance. Both are filtered to the
-  selected levels. If nothing is due and the daily new-card limit is reached, the
-  session is empty ("all caught up").
+- A **session** = every card currently **due** (across all levels you've
+  started), followed by **new** cards up to the remaining daily allowance. If
+  nothing is due and the daily new-card limit is reached, the session is empty
+  ("all caught up").
 - The **new-cards-per-day** limit (default 20) is a per-user setting; due reviews
   are never capped.
+- **New words follow a fixed curriculum** (`Fondamentale` → `Alto Uso` →
+  `Alta Disponibilità`). A level only starts feeding new cards once every earlier
+  level is **≥95% learned** (a card counts as "learned" when FSRS graduates it to
+  the Review state). Past that gate the next level is still introduced rarely,
+  ramping up to full as the prior level approaches 100% — so you're never flooded
+  with `Alto Uso` words while `Fondamentale` is still shaky. Cards you've already
+  started always remain due for review regardless of the gate.
 
 ## Pronunciation (TTS)
 
@@ -79,18 +88,37 @@ Gemini TTS (forced `it-IT`) on first request, caches the WAV to
 the browser Web Speech API** automatically. Audio is keyed per distinct word
 (SHA-1, case/space-insensitive), so the ~9k cards collapse to ~7.2k clips.
 
+## Example sentences
+
+Clicking **Show example sentence** on a revealed card fetches
+`GET /api/sentences?word=…`. The backend returns the sentences linked to that
+word, **lazily generating** one with Gemini (structured JSON: Italian, English,
+and the lemma+surface of every content word) on first request and caching it in
+the database. If `GEMINI_API_KEY` is unset the endpoint returns 503 and the UI
+hides the feature.
+
+The key design point is **reuse**: a sentence is stored once (`sentences`) and
+linked to *every* vocabulary word it contains (`sentence_words`, recording each
+word's exact surface form). So a sentence generated for `casa` can already
+satisfy a later request for `grande` if both appear in it — avoiding redundant
+generation and storage. A word can therefore have several sentences (its own,
+plus any it appears in incidentally); the UI lets you arrow through them. The
+stored surface forms are what a future fill-in-the-blank / multiple-choice mode
+will use to blank a word or build distractors.
+
 ## API
 
 | Method | Path                         | Body / notes                                  |
 | ------ | ---------------------------- | --------------------------------------------- |
 | GET    | `/api/health`                | liveness                                      |
-| GET    | `/api/levels`                | levels + translated-card counts               |
+| GET    | `/api/levels`                | curriculum: per-level count/learned/mastery/unlocked |
 | GET    | `/api/settings`              | `{ "new_cards_per_day": 20 }`                 |
 | PUT    | `/api/settings`              | `{ "new_cards_per_day": 10 }`                 |
-| POST   | `/api/sessions`              | `{ "levels": ["Fondamentale"] }`              |
+| POST   | `/api/sessions`              | no body; levels chosen by curriculum progress |
 | GET    | `/api/sessions/{id}`         | resume a session                              |
 | POST   | `/api/sessions/{id}/answers` | `{ "card_id": 123, "rating": 3 }` (1–4)       |
 | GET    | `/api/audio?word=…`          | WAV pronunciation (503 if TTS not configured) |
+| GET    | `/api/sentences?word=…`      | example sentences (503 if not configured)     |
 
 ## Extending toward the full vision
 

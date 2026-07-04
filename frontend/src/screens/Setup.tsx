@@ -2,12 +2,11 @@ import { useEffect, useState } from 'react'
 import { api, type Level } from '../api'
 
 interface Props {
-  onStart: (levels: string[]) => void
+  onStart: () => void
 }
 
 export function Setup({ onStart }: Props) {
   const [levels, setLevels] = useState<Level[]>([])
-  const [selected, setSelected] = useState<Set<string>>(new Set())
   const [newPerDay, setNewPerDay] = useState<number>(20)
   const [error, setError] = useState<string | null>(null)
 
@@ -15,14 +14,6 @@ export function Setup({ onStart }: Props) {
     api.levels().then(setLevels).catch((e) => setError(String(e.message ?? e)))
     api.getSettings().then((s) => setNewPerDay(s.new_cards_per_day)).catch(() => {})
   }, [])
-
-  const toggle = (name: string) => {
-    setSelected((prev) => {
-      const next = new Set(prev)
-      next.has(name) ? next.delete(name) : next.add(name)
-      return next
-    })
-  }
 
   const commitSetting = (value: number) => {
     const v = Math.max(0, Math.min(999, Math.floor(value) || 0))
@@ -34,27 +25,35 @@ export function Setup({ onStart }: Props) {
     <div className="app">
       <h1>Italiano flashcards</h1>
       <p className="subtitle">
-        Pick the vocabulary level(s) to study. Each session reviews everything
-        that's due, then introduces new words — spaced with FSRS.
+        Each session reviews everything that's due, then introduces new words —
+        spaced with FSRS. New words follow the vocabulary curriculum: a level
+        opens up only once you've learned the one before it.
       </p>
 
       {error && <div className="error">{error}</div>}
 
       <div className="levels">
-        {levels.map((l) => (
-          <label
-            key={l.level}
-            className={`level-option ${selected.has(l.level) ? 'selected' : ''}`}
-          >
-            <input
-              type="checkbox"
-              checked={selected.has(l.level)}
-              onChange={() => toggle(l.level)}
-            />
-            <span className="level-name">{l.level}</span>
-            <span className="level-count">{l.count.toLocaleString()} words</span>
-          </label>
-        ))}
+        {levels.map((l) => {
+          const pct = Math.round(l.mastery * 100)
+          return (
+            <div
+              key={l.level}
+              className={`level-progress ${l.unlocked ? 'unlocked' : 'locked'}`}
+            >
+              <div className="level-progress-head">
+                <span className="level-name">
+                  {l.unlocked ? l.level : `🔒 ${l.level}`}
+                </span>
+                <span className="level-count">
+                  {l.learned.toLocaleString()} / {l.count.toLocaleString()} learned
+                </span>
+              </div>
+              <div className="bar">
+                <div className="bar-fill" style={{ width: `${pct}%` }} />
+              </div>
+            </div>
+          )
+        })}
       </div>
 
       <div className="setting-row">
@@ -74,11 +73,7 @@ export function Setup({ onStart }: Props) {
         Due reviews are never capped — this only limits brand-new words.
       </p>
 
-      <button
-        className="btn-primary"
-        disabled={selected.size === 0}
-        onClick={() => onStart([...selected])}
-      >
+      <button className="btn-primary" onClick={onStart}>
         Start session
       </button>
     </div>

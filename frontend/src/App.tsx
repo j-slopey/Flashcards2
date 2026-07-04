@@ -15,11 +15,11 @@ export default function App() {
   const [phase, setPhase] = useState<Phase>({ name: 'setup' })
   const [error, setError] = useState<string | null>(null)
 
-  const start = async (levels: string[]) => {
+  const start = async () => {
     setError(null)
     setPhase({ name: 'loading' })
     try {
-      const session = await api.createSession(levels)
+      const session = await api.createSession()
       if (session.cards.length === 0) {
         setPhase({ name: 'empty' })
       } else {

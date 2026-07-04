@@ -8,6 +8,7 @@ import (
 	"os"
 
 	"flashcards/backend/internal/api"
+	"flashcards/backend/internal/sentence"
 	"flashcards/backend/internal/store"
 	"flashcards/backend/internal/tts"
 )
@@ -22,6 +23,7 @@ func main() {
 	}
 	defer st.Close()
 
+	st.SetSentenceGenerator(buildSentenceGen())
 	srv := &api.Server{Store: st, Audio: buildTTS()}
 	log.Printf("flashcards-api listening on %s (db=%s)", addr, dbPath)
 	if err := http.ListenAndServe(addr, srv.Handler()); err != nil {
@@ -51,6 +53,23 @@ func buildTTS() *tts.Cache {
 	}
 	log.Printf("pronunciation TTS enabled (Gemini, cache=%s)", dir)
 	return cache
+}
+
+// buildSentenceGen wires up Gemini-backed example sentences if GEMINI_API_KEY is
+// set; otherwise returns nil and the frontend hides the example feature.
+func buildSentenceGen() store.SentenceGenerator {
+	key := os.Getenv("GEMINI_API_KEY")
+	if key == "" {
+		log.Printf("GEMINI_API_KEY not set: example sentences disabled")
+		return nil
+	}
+	gen, err := sentence.NewGemini(context.Background(), key, os.Getenv("SENTENCE_MODEL"))
+	if err != nil {
+		log.Printf("example sentences disabled: %v", err)
+		return nil
+	}
+	log.Printf("example sentences enabled (Gemini)")
+	return gen
 }
 
 func getenv(key, def string) string {
