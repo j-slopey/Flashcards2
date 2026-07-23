@@ -10,11 +10,13 @@ export interface Spanish {
 
 export interface Card {
   id: number
+  kind: 'word' | 'phrase'
   level: string
-  word: string
+  category?: string
+  word: string // the Italian word, or the phrase in basics mode
   pos: string
   english: string
-  spanish: Spanish
+  spanish: Spanish // in basics mode, spanish.word holds the Spanish equivalent
   other_senses: number
 }
 
@@ -74,6 +76,12 @@ export interface Sentence {
   english: string
 }
 
+export interface PhraseCategory {
+  category: string
+  count: number
+  learned: number
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`/api${path}`, {
     headers: { 'Content-Type': 'application/json' },
@@ -110,4 +118,18 @@ export const api = {
     request<{ sentences: Sentence[] }>(
       `/sentences?word=${encodeURIComponent(word)}`,
     ).then((r) => r.sentences ?? []),
+
+  phraseCategories: () => request<PhraseCategory[]>('/phrases/categories'),
+
+  createPhraseSession: (category: string) =>
+    request<Session>('/phrases/sessions', {
+      method: 'POST',
+      body: JSON.stringify({ category }),
+    }),
+
+  answerPhrase: (sessionId: number, cardId: number, rating: RatingValue) =>
+    request<Progress>(`/phrases/sessions/${sessionId}/answers`, {
+      method: 'POST',
+      body: JSON.stringify({ card_id: cardId, rating }),
+    }),
 }

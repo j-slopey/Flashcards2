@@ -9,12 +9,17 @@ type Spanish struct {
 	Note     string `json:"note"`
 }
 
-// Card is a single (Italian word, part-of-speech sense) flashcard.
+// Card is a single flashcard. It represents either a vocabulary word (Kind
+// "word": the default deck, with POS and a Spanish cognate/false-friend
+// relation) or a basics phrase (Kind "phrase": Word holds the Italian phrase,
+// Category names its group, and Spanish.Word holds the Spanish equivalent).
 type Card struct {
 	ID          int64   `json:"id"`
-	Level       string  `json:"level"`
-	Word        string  `json:"word"`
-	POS         string  `json:"pos"` // per-sense English POS, e.g. "noun", "adjective"
+	Kind        string  `json:"kind"`               // "word" or "phrase"
+	Level       string  `json:"level"`              // vocabulary level (word deck)
+	Category    string  `json:"category,omitempty"` // phrase category (basics deck)
+	Word        string  `json:"word"`               // the Italian word or phrase
+	POS         string  `json:"pos"`                // per-sense English POS (word deck)
 	English     string  `json:"english"`
 	Spanish     Spanish `json:"spanish"`
 	OtherSenses int     `json:"other_senses"` // count of other cards sharing this word
@@ -51,13 +56,21 @@ type Level struct {
 	Order    int     `json:"order"`    // teaching order (0 = first)
 }
 
+// PhraseCategory is a basics-mode phrase group with the learner's progress:
+// how many phrases it has and how many are graduated to FSRS Review state.
+type PhraseCategory struct {
+	Category string `json:"category"`
+	Count    int    `json:"count"`
+	Learned  int    `json:"learned"`
+}
+
 // Session is a study session and its ordered cards.
 type Session struct {
 	ID        int64         `json:"id"`
 	Levels    []string      `json:"levels"`
 	Completed bool          `json:"completed"`
-	NewCount  int           `json:"new_count"`    // new cards introduced in this session
-	DueCount  int           `json:"due_count"`    // due reviews in this session
+	NewCount  int           `json:"new_count"` // new cards introduced in this session
+	DueCount  int           `json:"due_count"` // due reviews in this session
 	Cards     []SessionCard `json:"cards"`
 }
 

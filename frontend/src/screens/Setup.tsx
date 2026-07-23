@@ -3,9 +3,10 @@ import { api, type Level } from '../api'
 
 interface Props {
   onStart: () => void
+  onBack?: () => void
 }
 
-export function Setup({ onStart }: Props) {
+export function Setup({ onStart, onBack }: Props) {
   const [levels, setLevels] = useState<Level[]>([])
   const [newPerDay, setNewPerDay] = useState<number>(20)
   const [error, setError] = useState<string | null>(null)
@@ -23,6 +24,11 @@ export function Setup({ onStart }: Props) {
 
   return (
     <div className="app">
+      {onBack && (
+        <button className="btn-link back" onClick={onBack}>
+          ← Back
+        </button>
+      )}
       <h1>Italiano flashcards</h1>
       <p className="subtitle">
         Each session reviews everything that's due, then introduces new words —

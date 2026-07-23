@@ -1,44 +1,56 @@
 import { useState } from 'react'
 import { api, Rating, type RatingValue, type Session } from './api'
+import { Home } from './screens/Home'
 import { Setup } from './screens/Setup'
+import { BasicsSetup } from './screens/BasicsSetup'
 import { Play } from './screens/Play'
 import { Summary } from './screens/Summary'
 
+type Mode = 'vocab' | 'basics'
+
 type Phase =
+  | { name: 'home' }
   | { name: 'setup' }
+  | { name: 'basics-setup' }
   | { name: 'loading' }
-  | { name: 'empty' }
-  | { name: 'play'; session: Session; index: number; remembered: number }
+  | { name: 'empty'; mode: Mode }
+  | { name: 'play'; mode: Mode; session: Session; index: number; remembered: number }
   | { name: 'done'; remembered: number; total: number }
 
 export default function App() {
-  const [phase, setPhase] = useState<Phase>({ name: 'setup' })
+  const [phase, setPhase] = useState<Phase>({ name: 'home' })
   const [error, setError] = useState<string | null>(null)
 
-  const start = async () => {
+  // begin runs a session-creating call and moves into play (or empty).
+  const begin = async (mode: Mode, create: () => Promise<Session>) => {
     setError(null)
     setPhase({ name: 'loading' })
     try {
-      const session = await api.createSession()
+      const session = await create()
       if (session.cards.length === 0) {
-        setPhase({ name: 'empty' })
+        setPhase({ name: 'empty', mode })
       } else {
-        setPhase({ name: 'play', session, index: 0, remembered: 0 })
+        setPhase({ name: 'play', mode, session, index: 0, remembered: 0 })
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
-      setPhase({ name: 'setup' })
+      setPhase({ name: mode === 'basics' ? 'basics-setup' : 'setup' })
     }
   }
 
+  const startVocab = () => begin('vocab', () => api.createSession())
+  const startBasics = (category: string) =>
+    begin('basics', () => api.createPhraseSession(category))
+
   const grade = (rating: RatingValue) => {
     if (phase.name !== 'play') return
-    const { session, index } = phase
+    const { session, index, mode } = phase
     const card = session.cards[index].card
 
     // Log the rating; advance optimistically so a logging hiccup never blocks
     // studying (the FSRS state is the source of truth and will catch up).
-    api.answer(session.id, card.id, rating).catch(() => {})
+    const log = mode === 'basics' ? api.answerPhrase : api.answer
+    log(session.id, card.id, rating).catch(() => {})
 
     const nextRemembered = phase.remembered + (rating !== Rating.Again ? 1 : 0)
     const nextIndex = index + 1
@@ -50,6 +62,20 @@ export default function App() {
   }
 
   switch (phase.name) {
+    case 'home':
+      return (
+        <>
+          {error && (
+            <div className="app">
+              <div className="error">{error}</div>
+            </div>
+          )}
+          <Home
+            onVocab={() => setPhase({ name: 'setup' })}
+            onBasics={() => setPhase({ name: 'basics-setup' })}
+          />
+        </>
+      )
     case 'loading':
       return (
         <div className="app">
@@ -64,7 +90,12 @@ export default function App() {
             Nothing is due right now and you've hit today's new-card limit. Come
             back later, or raise the daily limit.
           </p>
-          <button className="btn-primary" onClick={() => setPhase({ name: 'setup' })}>
+          <button
+            className="btn-primary"
+            onClick={() =>
+              setPhase({ name: phase.mode === 'basics' ? 'basics-setup' : 'setup' })
+            }
+          >
             Back
           </button>
         </div>
@@ -87,8 +118,22 @@ export default function App() {
         <Summary
           remembered={phase.remembered}
           total={phase.total}
-          onRestart={() => setPhase({ name: 'setup' })}
+          onRestart={() => setPhase({ name: 'home' })}
         />
+      )
+    case 'basics-setup':
+      return (
+        <>
+          {error && (
+            <div className="app">
+              <div className="error">{error}</div>
+            </div>
+          )}
+          <BasicsSetup
+            onStart={startBasics}
+            onBack={() => setPhase({ name: 'home' })}
+          />
+        </>
       )
     case 'setup':
     default:
@@ -99,7 +144,7 @@ export default function App() {
               <div className="error">{error}</div>
             </div>
           )}
-          <Setup onStart={start} />
+          <Setup onStart={startVocab} onBack={() => setPhase({ name: 'home' })} />
         </>
       )
   }

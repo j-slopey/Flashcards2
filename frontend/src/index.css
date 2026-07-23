@@ -350,6 +350,119 @@ button:disabled {
   line-height: 1.45;
 }
 
+/* --- Home / mode picker --- */
+.mode-grid {
+  display: grid;
+  gap: 1rem;
+  margin-top: 1.5rem;
+}
+
+.mode-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  text-align: left;
+  padding: 1.25rem 1.4rem;
+  border: 1.5px solid var(--line);
+  border-radius: 14px;
+  background: var(--surface);
+  color: var(--ink);
+  cursor: pointer;
+  transition: border-color 0.15s, transform 0.05s;
+}
+
+.mode-card:hover {
+  border-color: var(--accent);
+}
+
+.mode-card:active {
+  transform: translateY(1px);
+}
+
+.mode-title {
+  font-size: 1.15rem;
+  font-weight: 700;
+}
+
+.mode-desc {
+  color: var(--muted);
+  font-size: 0.9rem;
+  line-height: 1.45;
+}
+
+/* --- Basics category picker --- */
+.btn-link {
+  background: none;
+  border: none;
+  color: var(--muted);
+  padding: 0;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.btn-link:hover {
+  color: var(--accent);
+}
+
+.btn-link.back {
+  display: inline-block;
+  margin-bottom: 0.75rem;
+}
+
+.phrase-cat {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: 1.5px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+  color: var(--ink);
+  padding: 0.85rem 1rem;
+  margin-bottom: 0.6rem;
+  cursor: pointer;
+  transition: border-color 0.15s;
+}
+
+.phrase-cat:hover {
+  border-color: var(--accent);
+}
+
+.phrase-cat.all {
+  border-style: dashed;
+  margin-bottom: 1rem;
+}
+
+.phrase-cat-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.5rem;
+}
+
+.phrase-cat.all .phrase-cat-head {
+  margin-bottom: 0;
+}
+
+.empty-note {
+  border: 1.5px solid var(--line);
+  border-radius: 12px;
+  padding: 1rem 1.2rem;
+  background: var(--surface);
+}
+
+.empty-note code {
+  background: var(--bg);
+  padding: 0.1rem 0.35rem;
+  border-radius: 5px;
+  font-size: 0.85em;
+}
+
+.word.phrase {
+  font-size: 1.5rem;
+  line-height: 1.35;
+}
+
 /* --- Example sentences --- */
 .examples {
   margin-top: 1.1rem;

@@ -31,6 +31,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/sessions", s.createSession)
 	mux.HandleFunc("GET /api/sessions/{id}", s.getSession)
 	mux.HandleFunc("POST /api/sessions/{id}/answers", s.postAnswer)
+	mux.HandleFunc("GET /api/phrases/categories", s.phraseCategories)
+	mux.HandleFunc("POST /api/phrases/sessions", s.createPhraseSession)
+	mux.HandleFunc("GET /api/phrases/sessions/{id}", s.getPhraseSession)
+	mux.HandleFunc("POST /api/phrases/sessions/{id}/answers", s.postPhraseAnswer)
 	mux.HandleFunc("GET /api/audio", s.audio)
 	mux.HandleFunc("GET /api/sentences", s.sentences)
 	return cors(mux)
@@ -115,6 +119,78 @@ func (s *Server) postAnswer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	prog, err := s.Store.RecordReview(id, req.CardID, req.Rating)
+	if errors.Is(err, store.ErrNotFound) {
+		writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, prog)
+}
+
+// phraseCategories lists the basics phrase categories with progress. Returns an
+// empty list until the phrases have been generated.
+func (s *Server) phraseCategories(w http.ResponseWriter, _ *http.Request) {
+	cats, err := s.Store.PhraseCategories()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, cats)
+}
+
+type phraseSessionReq struct {
+	Category string `json:"category"` // "" = all categories
+}
+
+// createPhraseSession starts a basics session, optionally limited to a category.
+func (s *Server) createPhraseSession(w http.ResponseWriter, r *http.Request) {
+	req := phraseSessionReq{}
+	// The body is optional; ignore EOF (no body) but reject malformed JSON.
+	if r.ContentLength != 0 {
+		if err := decode(r, &req); err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+	}
+	sess, err := s.Store.NewPhraseSession(strings.TrimSpace(req.Category))
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, sess)
+}
+
+func (s *Server) getPhraseSession(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	sess, err := s.Store.GetPhraseSession(id)
+	if errors.Is(err, store.ErrNotFound) {
+		writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, sess)
+}
+
+func (s *Server) postPhraseAnswer(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	var req answerReq
+	if err := decode(r, &req); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	prog, err := s.Store.RecordPhraseReview(id, req.CardID, req.Rating)
 	if errors.Is(err, store.ErrNotFound) {
 		writeErr(w, http.StatusNotFound, err)
 		return

@@ -35,6 +35,30 @@ func newTestStore(t *testing.T) (*Store, *time.Time) {
 	}
 	mustInsertCard(t, db, "Alto Uso", "altro", "verb")
 	mustInsertCard(t, db, "Alto Uso", "secondo", "noun")
+
+	// A small basics `phrases` content table (as the Python pipeline produces):
+	// 3 "Saluti" + 2 "Cibo" phrases.
+	if _, err := db.Exec(`
+		CREATE TABLE phrases (
+			category TEXT, italian TEXT, english TEXT, spanish TEXT
+		);`); err != nil {
+		t.Fatalf("create phrases: %v", err)
+	}
+	phrases := []struct{ cat, it, en, es string }{
+		{"Saluti", "Buongiorno", "Good morning", "Buenos días"},
+		{"Saluti", "Come stai?", "How are you?", "¿Cómo estás?"},
+		{"Saluti", "Arrivederci", "Goodbye", "Adiós"},
+		{"Cibo", "Il conto, per favore", "The bill, please", "La cuenta, por favor"},
+		{"Cibo", "Un caffè, grazie", "A coffee, thanks", "Un café, gracias"},
+	}
+	for _, p := range phrases {
+		if _, err := db.Exec(
+			`INSERT INTO phrases (category, italian, english, spanish) VALUES (?,?,?,?)`,
+			p.cat, p.it, p.en, p.es); err != nil {
+			t.Fatalf("insert phrase: %v", err)
+		}
+	}
+
 	if err := db.Close(); err != nil {
 		t.Fatalf("close fixture db: %v", err)
 	}
@@ -243,7 +267,7 @@ func TestRecordReviewSchedulesAndCompletes(t *testing.T) {
 	}
 
 	// The Easy card should now have FSRS state with a future due date.
-	card, _, found := s.loadState(s.db, sess.Cards[1].Card.ID)
+	card, _, found := s.loadState(s.db, "card_states", sess.Cards[1].Card.ID)
 	if !found {
 		t.Fatal("expected card_state after review")
 	}

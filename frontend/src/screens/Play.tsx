@@ -70,6 +70,7 @@ export function Play({ sessionCard, index, total, rememberedSoFar, onGrade }: Pr
   }
 
   const rel = card.spanish.relation
+  const isPhrase = card.kind === 'phrase'
   const pct = (index / total) * 100
 
   return (
@@ -86,11 +87,11 @@ export function Play({ sessionCard, index, total, rememberedSoFar, onGrade }: Pr
 
       <div className="card">
         <div className="card-level">
-          {card.level}
+          {isPhrase ? card.category : card.level}
           {is_new ? <span className="new-tag">new</span> : null}
         </div>
         <div className="word-row">
-          <span className="word">{card.word}</span>
+          <span className={isPhrase ? 'word phrase' : 'word'}>{card.word}</span>
           <button
             className={`speak-btn ${speaking ? 'speaking' : ''}`}
             onClick={speak}
@@ -115,16 +116,30 @@ export function Play({ sessionCard, index, total, rememberedSoFar, onGrade }: Pr
               </svg>
           </button>
         </div>
-        <div className="pos">{card.pos}</div>
+        {!isPhrase && <div className="pos">{card.pos}</div>}
 
-        {card.other_senses > 0 && (
+        {!isPhrase && card.other_senses > 0 && (
           <div className="sense-hint">
             this word has {card.other_senses} other meaning
             {card.other_senses > 1 ? 's' : ''}
           </div>
         )}
 
-        {revealed && (
+        {revealed && isPhrase && (
+          <>
+            <div className="divider" />
+            <div className="english">{card.english}</div>
+            {card.spanish.word && (
+              <div className="spanish">
+                <div className="spanish-word">
+                  Spanish: <span className="es">{card.spanish.word}</span>
+                </div>
+              </div>
+            )}
+          </>
+        )}
+
+        {revealed && !isPhrase && (
           <>
             <div className="divider" />
             <div className="english">{card.english}</div>

@@ -177,6 +177,51 @@ CREATE TABLE IF NOT EXISTS sentence_words (
     PRIMARY KEY (sentence_id, word)
 );
 CREATE INDEX IF NOT EXISTS idx_sentence_words_word ON sentence_words(word);
+-- "Basics" phrase deck: its own FSRS progress + session tables, parallel to the
+-- vocabulary ones, so phrase ids can't collide with flashcards.rowid. The phrase
+-- *content* table (phrases) is produced by the Python pipeline, like flashcards.
+CREATE TABLE IF NOT EXISTS phrase_states (
+    user_id        INTEGER NOT NULL REFERENCES users(id),
+    card_id        INTEGER NOT NULL,     -- phrases.rowid
+    due            TEXT NOT NULL,
+    stability      REAL NOT NULL,
+    difficulty     REAL NOT NULL,
+    elapsed_days   INTEGER NOT NULL,
+    scheduled_days INTEGER NOT NULL,
+    reps           INTEGER NOT NULL,
+    lapses         INTEGER NOT NULL,
+    state          INTEGER NOT NULL,     -- fsrs.State 0..3
+    last_review    TEXT,
+    introduced_at  TEXT NOT NULL,
+    updated_at     TEXT NOT NULL,
+    PRIMARY KEY (user_id, card_id)
+);
+CREATE INDEX IF NOT EXISTS idx_phrase_states_user_due ON phrase_states(user_id, due);
+CREATE TABLE IF NOT EXISTS phrase_sessions (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id      INTEGER NOT NULL REFERENCES users(id),
+    category     TEXT NOT NULL,          -- chosen category, or "" for all
+    created_at   TEXT NOT NULL,
+    completed_at TEXT
+);
+CREATE TABLE IF NOT EXISTS phrase_session_cards (
+    session_id INTEGER NOT NULL REFERENCES phrase_sessions(id),
+    position   INTEGER NOT NULL,
+    card_id    INTEGER NOT NULL,         -- phrases.rowid
+    is_new     INTEGER NOT NULL DEFAULT 0,
+    answered   INTEGER NOT NULL DEFAULT 0,
+    rating     INTEGER,
+    PRIMARY KEY (session_id, position)
+);
+CREATE TABLE IF NOT EXISTS phrase_reviews (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id     INTEGER NOT NULL REFERENCES users(id),
+    card_id     INTEGER NOT NULL,        -- phrases.rowid
+    session_id  INTEGER REFERENCES phrase_sessions(id),
+    rating      INTEGER NOT NULL,
+    reviewed_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_phrase_reviews_user_card ON phrase_reviews(user_id, card_id);
 `
 	if _, err := s.db.Exec(schema); err != nil {
 		return fmt.Errorf("migrate: %w", err)
@@ -296,6 +341,7 @@ func scanCard(rows *sql.Rows) (Card, error) {
 	if err != nil {
 		return c, err
 	}
+	c.Kind = "word"
 	c.Spanish = Spanish{Relation: rel.String, Word: sw.String, Note: sn.String}
 	if c.Spanish.Relation == "" {
 		c.Spanish.Relation = "none"
@@ -390,9 +436,9 @@ type rowQuerier interface {
 	QueryRow(query string, args ...any) *sql.Row
 }
 
-// loadState returns the stored FSRS card and its introduced_at time, or
-// (NewCard, false) if the user has never seen the card.
-func (s *Store) loadState(q rowQuerier, cardID int64) (fsrs.Card, time.Time, bool) {
+// loadState returns the stored FSRS card and its introduced_at time from the
+// given state table, or (NewCard, false) if the user has never seen the card.
+func (s *Store) loadState(q rowQuerier, table string, cardID int64) (fsrs.Card, time.Time, bool) {
 	var (
 		due, lastReview, introduced      string
 		stability, difficulty            float64
@@ -402,7 +448,7 @@ func (s *Store) loadState(q rowQuerier, cardID int64) (fsrs.Card, time.Time, boo
 	err := q.QueryRow(`
 		SELECT due, stability, difficulty, elapsed_days, scheduled_days,
 		       reps, lapses, state, last_review, introduced_at
-		FROM card_states WHERE user_id = ? AND card_id = ?`,
+		FROM `+table+` WHERE user_id = ? AND card_id = ?`,
 		DefaultUserID, cardID).
 		Scan(&due, &stability, &difficulty, &elapsed, &scheduled,
 			&reps, &lapses, &state, &lastReview, &introduced)
@@ -423,10 +469,11 @@ func (s *Store) loadState(q rowQuerier, cardID int64) (fsrs.Card, time.Time, boo
 	return card, ptime(introduced), true
 }
 
-// saveState upserts the FSRS card state for the current user.
-func (s *Store) saveState(tx *sql.Tx, cardID int64, c fsrs.Card, introduced time.Time) error {
+// saveState upserts the FSRS card state for the current user into the given
+// state table.
+func (s *Store) saveState(tx *sql.Tx, table string, cardID int64, c fsrs.Card, introduced time.Time) error {
 	_, err := tx.Exec(`
-		INSERT INTO card_states
+		INSERT INTO `+table+`
 		    (user_id, card_id, due, stability, difficulty, elapsed_days,
 		     scheduled_days, reps, lapses, state, last_review, introduced_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -444,8 +491,8 @@ func (s *Store) saveState(tx *sql.Tx, cardID int64, c fsrs.Card, introduced time
 
 // preview computes the human-readable next interval for each rating, as it
 // would be if the card were reviewed right now.
-func (s *Store) preview(cardID int64, now time.Time) Intervals {
-	card, _, _ := s.loadState(s.db, cardID)
+func (s *Store) preview(table string, cardID int64, now time.Time) Intervals {
+	card, _, _ := s.loadState(s.db, table, cardID)
 	log := s.fsrs.Repeat(card, now)
 	return Intervals{
 		Again: humanize(log[fsrs.Again].Card.Due.Sub(now)),
@@ -469,13 +516,13 @@ func humanize(d time.Duration) string {
 	return fmt.Sprintf("%dd", int(d.Hours()/24))
 }
 
-// newCardsIntroducedToday counts how many cards were first seen on the current
-// (UTC) day, to enforce the daily new-card limit.
-func (s *Store) newCardsIntroducedToday(now time.Time) (int, error) {
+// newCardsIntroducedToday counts how many cards in the given state table were
+// first seen on the current (UTC) day, to enforce the daily new-card limit.
+func (s *Store) newCardsIntroducedToday(table string, now time.Time) (int, error) {
 	today := now.UTC().Format("2006-01-02")
 	var n int
 	err := s.db.QueryRow(
-		`SELECT COUNT(*) FROM card_states
+		`SELECT COUNT(*) FROM `+table+`
 		 WHERE user_id = ? AND substr(introduced_at, 1, 10) = ?`,
 		DefaultUserID, today).Scan(&n)
 	return n, err
@@ -568,7 +615,7 @@ func (s *Store) NewSession() (*Session, error) {
 	if err != nil {
 		return nil, err
 	}
-	introduced, err := s.newCardsIntroducedToday(now)
+	introduced, err := s.newCardsIntroducedToday("card_states", now)
 	if err != nil {
 		return nil, err
 	}
@@ -604,192 +651,28 @@ func (s *Store) NewSession() (*Session, error) {
 	}{{due, false}, {fresh, true}} {
 		for _, c := range group.cards {
 			sess.Cards = append(sess.Cards, SessionCard{
-				Position: pos, Card: c, IsNew: group.isNew, Preview: s.preview(c.ID, now),
+				Position: pos, Card: c, IsNew: group.isNew, Preview: s.preview("card_states", c.ID, now),
 			})
 			pos++
 		}
 	}
 
 	// Persist the session and its cards.
-	tx, err := s.db.Begin()
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback()
-
-	res, err := tx.Exec(
-		`INSERT INTO sessions (user_id, levels, created_at) VALUES (?, ?, ?)`,
-		DefaultUserID, strings.Join(unlocked, "\n"), s.nowStr())
-	if err != nil {
-		return nil, err
-	}
-	sess.ID, err = res.LastInsertId()
-	if err != nil {
-		return nil, err
-	}
-	for _, sc := range sess.Cards {
-		if _, err := tx.Exec(
-			`INSERT INTO session_cards (session_id, position, card_id, is_new)
-			 VALUES (?, ?, ?, ?)`, sess.ID, sc.Position, sc.Card.ID, b2i(sc.IsNew)); err != nil {
-			return nil, err
-		}
-	}
-
-	if err := tx.Commit(); err != nil {
+	if err := s.persistSession(s.vocabDeck(), strings.Join(unlocked, "\n"), sess); err != nil {
 		return nil, err
 	}
 	return sess, nil
 }
 
-// GetSession loads a session, its ordered cards, each card's rating so far, and
-// a fresh interval preview.
+// GetSession loads a vocabulary session, its ordered cards, each card's rating
+// so far, and a fresh interval preview.
 func (s *Store) GetSession(id int64) (*Session, error) {
-	var levels string
-	var completedAt sql.NullString
-	err := s.db.QueryRow(
-		`SELECT levels, completed_at FROM sessions WHERE id = ?`, id).
-		Scan(&levels, &completedAt)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, ErrNotFound
-	}
-	if err != nil {
-		return nil, err
-	}
-
-	sess := &Session{
-		ID:        id,
-		Levels:    strings.Split(levels, "\n"),
-		Completed: completedAt.Valid,
-	}
-
-	rows, err := s.db.Query(`
-		SELECT sc.position, sc.card_id, sc.is_new, sc.answered, sc.rating
-		FROM session_cards sc WHERE sc.session_id = ? ORDER BY sc.position`, id)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	now := s.now()
-	type state struct {
-		pos             int
-		cardID          int64
-		isNew, answered bool
-		rating          sql.NullInt64
-	}
-	var states []state
-	for rows.Next() {
-		var st state
-		var isNew, answered int
-		if err := rows.Scan(&st.pos, &st.cardID, &isNew, &answered, &st.rating); err != nil {
-			return nil, err
-		}
-		st.isNew, st.answered = isNew != 0, answered != 0
-		states = append(states, st)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-
-	for _, st := range states {
-		cards, err := s.queryCards(` WHERE f.rowid = ?`, st.cardID)
-		if err != nil {
-			return nil, err
-		}
-		if len(cards) == 0 {
-			continue
-		}
-		sc := SessionCard{
-			Position: st.pos,
-			Card:     cards[0],
-			IsNew:    st.isNew,
-			Answered: st.answered,
-			Preview:  s.preview(st.cardID, now),
-		}
-		if st.rating.Valid {
-			r := int(st.rating.Int64)
-			sc.Rating = &r
-		}
-		sess.Cards = append(sess.Cards, sc)
-	}
-	sess.DueCount, sess.NewCount = countKinds(sess.Cards)
-	return sess, nil
+	return s.getSession(s.vocabDeck(), id)
 }
 
-// RecordReview applies an FSRS rating (1..4) to a card in a session: it updates
-// the card's memory state, logs the review, advances the session, completes it
-// once every card is answered, and returns the updated progress.
+// RecordReview applies an FSRS rating (1..4) to a card in a vocabulary session.
 func (s *Store) RecordReview(sessionID, cardID int64, rating int) (*Progress, error) {
-	if rating < 1 || rating > 4 {
-		return nil, errors.New("rating must be between 1 (Again) and 4 (Easy)")
-	}
-	now := s.now()
-
-	tx, err := s.db.Begin()
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback()
-
-	// The card must belong to the session.
-	var dummy int
-	err = tx.QueryRow(
-		`SELECT 1 FROM session_cards WHERE session_id = ? AND card_id = ?`,
-		sessionID, cardID).Scan(&dummy)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, fmt.Errorf("%w: card %d not in session %d", ErrNotFound, cardID, sessionID)
-	}
-	if err != nil {
-		return nil, err
-	}
-
-	// Apply FSRS scheduling (read state through the tx; pool has one connection).
-	card, introduced, found := s.loadState(tx, cardID)
-	if !found {
-		introduced = now
-	}
-	info := s.fsrs.Next(card, now, fsrs.Rating(rating))
-	if err := s.saveState(tx, cardID, info.Card, introduced); err != nil {
-		return nil, err
-	}
-
-	if _, err := tx.Exec(
-		`INSERT INTO reviews (user_id, card_id, session_id, rating, reviewed_at)
-		 VALUES (?, ?, ?, ?, ?)`,
-		DefaultUserID, cardID, sessionID, rating, s.nowStr()); err != nil {
-		return nil, err
-	}
-
-	if _, err := tx.Exec(
-		`UPDATE session_cards SET answered = 1, rating = ?
-		 WHERE session_id = ? AND card_id = ?`,
-		rating, sessionID, cardID); err != nil {
-		return nil, err
-	}
-
-	var p Progress
-	if err := tx.QueryRow(`
-		SELECT COUNT(*),
-		       COALESCE(SUM(answered), 0),
-		       COALESCE(SUM(CASE WHEN rating IS NOT NULL AND rating <> 1 THEN 1 ELSE 0 END), 0)
-		FROM session_cards WHERE session_id = ?`, sessionID).
-		Scan(&p.Total, &p.Answered, &p.Remembered); err != nil {
-		return nil, err
-	}
-	p.Completed = p.Total > 0 && p.Answered == p.Total
-
-	if p.Completed {
-		if _, err := tx.Exec(
-			`UPDATE sessions SET completed_at = ? WHERE id = ? AND completed_at IS NULL`,
-			s.nowStr(), sessionID); err != nil {
-			return nil, err
-		}
-	}
-
-	if err := tx.Commit(); err != nil {
-		return nil, err
-	}
-	return &p, nil
+	return s.recordReview(s.vocabDeck(), sessionID, cardID, rating)
 }
 
 // --- small helpers ---
